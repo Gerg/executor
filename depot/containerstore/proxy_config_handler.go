@@ -240,6 +240,7 @@ func (p *ProxyConfigHandler) Close(invalidCredentials Credential, container exec
 
 func (p *ProxyConfigHandler) writeConfig(credentials Credential, container executor.Container) error {
 	proxyConfigPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "envoy.yaml")
+	ldsConfigPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "lds.yaml")
 	sdsServerCertAndKeyPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "sds-server-cert-and-key.yaml")
 	sdsServerValidationContextPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "sds-server-validation-context.yaml")
 
@@ -259,6 +260,20 @@ func (p *ProxyConfigHandler) writeConfig(credentials Credential, container execu
 	}
 
 	err = writeProxyConfig(proxyConfig, proxyConfigPath)
+	if err != nil {
+		return err
+	}
+
+	ldsConfig, err := generateLDSConfig(
+		proxyConfig.StaticResources.Listeners[0],
+	)
+	if err != nil {
+		return err
+	}
+
+	proxyConfig.StaticResources.Listeners = nil
+
+	err = writeLDSConfig(ldsConfig, ldsConfigPath)
 	if err != nil {
 		return err
 	}
@@ -297,6 +312,17 @@ func envoyAddr(ip string, port uint16) *envoy_core.Address {
 			},
 		},
 	}
+}
+
+func generateLDSConfig(listeners proto.Message) (*envoy_discovery.DiscoveryResponse, error) {
+	resourceAny, err := ptypes.MarshalAny(listeners)
+	if err != nil {
+		return nil, err
+	}
+	return &envoy_discovery.DiscoveryResponse{
+		VersionInfo: "2",
+		Resources:   []*any.Any{resourceAny},
+	}, nil
 }
 
 func generateProxyConfig(
@@ -405,6 +431,14 @@ func generateProxyConfig(
 		config.DynamicResources = dynamicResources
 	}
 
+	config.DynamicResources = &envoy_bootstrap.Bootstrap_DynamicResources{
+		LdsConfig: &envoy_core.ConfigSource{
+			ConfigSourceSpecifier: &envoy_core.ConfigSource_Path{
+				Path: "/etc/cf-assets/envoy_config/lds.yaml",
+			},
+		},
+	}
+
 	config.StaticResources.Clusters = clusters
 
 	return config, nil
@@ -427,6 +461,19 @@ func splitHost(host string) (string, uint16, error) {
 		return "", 0, fmt.Errorf("ads server address is invalid: %s", host)
 	}
 	return parts[0], uint16(port), nil
+}
+
+func writeLDSConfig(ldsConfig *envoy_discovery.DiscoveryResponse, path string) error {
+	jsonMarshaler := jsonpb.Marshaler{OrigName: true, EmitDefaults: false}
+	jsonStr, err := jsonMarshaler.MarshalToString(ldsConfig)
+	if err != nil {
+		return err
+	}
+	yamlStr, err := ghodss_yaml.JSONToYAML([]byte(jsonStr))
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(path, yamlStr, 0666)
 }
 
 func writeProxyConfig(proxyConfig *envoy_bootstrap.Bootstrap, path string) error {
@@ -462,6 +509,7 @@ func generateListeners(container executor.Container, requireClientCerts bool) ([
 		tlsContext := &envoy_tls.DownstreamTlsContext{
 			RequireClientCertificate: &wrappers.BoolValue{Value: requireClientCerts},
 			CommonTlsContext: &envoy_tls.CommonTlsContext{
+				AlpnProtocols: []string{"h2", "http/1.1"},
 				TlsCertificateSdsSecretConfigs: []*envoy_tls.SdsSecretConfig{
 					{
 						Name: "server-cert-and-key",
