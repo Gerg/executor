@@ -712,7 +712,46 @@ func (t *transformer) transformCheckDefinition(
 		}
 	}
 
-	readinessCheck := steps.NewParallel(append(proxyReadinessChecks, readinessChecks...))
+	rl := models.ResourceLimits{}
+	// rl.SetNofile(nofiles)
+	runAction := models.RunAction{
+		LogSource:      "H2CHECK",
+		ResourceLimits: &rl,
+		Path:           "/etc/cf-assets/envoy_config/h2ify.sh",
+		Args:           []string{},
+	}
+
+	buffer := bytes.NewBuffer(nil)
+	bufferedLogStreamer := log_streamer.NewBufferStreamer(buffer, ioutil.Discard)
+	sidecar := steps.Sidecar{
+		Name:                    "h2Sidecar",
+		Image:                   garden.ImageRef{URI: t.sidecarRootFS},
+		BindMounts:              bindMounts,
+		OverrideContainerLimits: &garden.ProcessLimits{},
+	}
+	runStep := steps.NewRunWithSidecar(gardenContainer,
+		runAction,
+		bufferedLogStreamer,
+		logger,
+		container.ExternalIP,
+		container.InternalIP,
+		container.Ports,
+		t.clock,
+		t.gracefulShutdownInterval,
+		true,
+		sidecar,
+		container.Privileged,
+	)
+
+	h2SedFriend := steps.NewOutputWrapper(runStep, buffer)
+
+	readinessCheck := steps.NewSerial(
+		[]ifrit.Runner{
+			steps.NewParallel(append(proxyReadinessChecks, readinessChecks...)),
+			h2SedFriend,
+		},
+	)
+
 	livenessCheck := steps.NewCodependent(livenessChecks, false, false)
 
 	return steps.NewHealthCheckStep(

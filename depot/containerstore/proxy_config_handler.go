@@ -195,6 +195,7 @@ func (p *ProxyConfigHandler) CreateDir(logger lager.Logger, container executor.C
 			Origin:  garden.BindMountOriginHost,
 			SrcPath: proxyConfigDir,
 			DstPath: "/etc/cf-assets/envoy_config",
+			Mode:    garden.BindMountModeRW,
 		},
 	}
 
@@ -241,6 +242,7 @@ func (p *ProxyConfigHandler) Close(invalidCredentials Credential, container exec
 func (p *ProxyConfigHandler) writeConfig(credentials Credential, container executor.Container) error {
 	proxyConfigPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "envoy.yaml")
 	ldsConfigPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "lds.yaml")
+	h2ificationPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "h2ify.sh")
 	sdsServerCertAndKeyPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "sds-server-cert-and-key.yaml")
 	sdsServerValidationContextPath := filepath.Join(p.containerProxyConfigPath, container.Guid, "sds-server-validation-context.yaml")
 
@@ -259,21 +261,26 @@ func (p *ProxyConfigHandler) writeConfig(credentials Credential, container execu
 		return err
 	}
 
-	err = writeProxyConfig(proxyConfig, proxyConfigPath)
-	if err != nil {
-		return err
-	}
-
 	ldsConfig, err := generateLDSConfig(
 		proxyConfig.StaticResources.Listeners[0],
 	)
 	if err != nil {
 		return err
 	}
+	proxyConfig.StaticResources.Listeners = proxyConfig.StaticResources.Listeners[1:]
 
-	proxyConfig.StaticResources.Listeners = nil
+	err = writeProxyConfig(proxyConfig, proxyConfigPath)
+	if err != nil {
+		return err
+	}
 
 	err = writeLDSConfig(ldsConfig, ldsConfigPath)
+	if err != nil {
+		return err
+	}
+
+	h2ificationAlgorithm := "echo 'CARSON IS GAOL SME 4 LYFE'\nsed -i s~http/1.1~h2,http/1.1~ /etc/cf-assets/envoy_config/lds.yaml\necho 'GERG WAS HERE'"
+	err = ioutil.WriteFile(h2ificationPath, []byte(h2ificationAlgorithm), 0777)
 	if err != nil {
 		return err
 	}
@@ -509,7 +516,8 @@ func generateListeners(container executor.Container, requireClientCerts bool) ([
 		tlsContext := &envoy_tls.DownstreamTlsContext{
 			RequireClientCertificate: &wrappers.BoolValue{Value: requireClientCerts},
 			CommonTlsContext: &envoy_tls.CommonTlsContext{
-				AlpnProtocols: []string{"h2", "http/1.1"},
+				// AlpnProtocols: []string{"h2", "http/1.1"},
+				AlpnProtocols: []string{"http/1.1"},
 				TlsCertificateSdsSecretConfigs: []*envoy_tls.SdsSecretConfig{
 					{
 						Name: "server-cert-and-key",
