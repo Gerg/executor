@@ -745,12 +745,7 @@ func (t *transformer) transformCheckDefinition(
 
 	h2SedFriend := steps.NewOutputWrapper(runStep, buffer)
 
-	readinessCheck := steps.NewSerial(
-		[]ifrit.Runner{
-			steps.NewParallel(append(proxyReadinessChecks, readinessChecks...)),
-			h2SedFriend,
-		},
-	)
+	readinessCheck := steps.NewParallel(append(append(proxyReadinessChecks, h2SedFriend), readinessChecks...))
 
 	livenessCheck := steps.NewCodependent(livenessChecks, false, false)
 
